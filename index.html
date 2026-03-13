@@ -1,578 +1,596 @@
 <!DOCTYPE html>
 <html lang="de">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Quadrat-Parkour</title>
-  <style>
-    * {
-      margin: 0;
-      padding: 0;
-      box-sizing: border-box;
-    }
-
-    body {
-      background: #1a1a2e;
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      justify-content: center;
-      height: 100vh;
-      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-      overflow: hidden;
-    }
-
-    #gameContainer {
-      position: relative;
-    }
-
-    canvas {
-      display: block;
-      border: 3px solid #e94560;
-      border-radius: 4px;
-      box-shadow: 0 0 30px rgba(233, 69, 96, 0.4);
-    }
-
-    #ui {
-      position: absolute;
-      top: 10px;
-      left: 10px;
-      color: #fff;
-      font-size: 15px;
-      pointer-events: none;
-    }
-
-    #ui span {
-      display: inline-block;
-      background: rgba(0, 0, 0, 0.5);
-      padding: 4px 10px;
-      border-radius: 4px;
-      margin-right: 8px;
-    }
-
-    #overlay {
-      position: absolute;
-      inset: 0;
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      justify-content: center;
-      background: rgba(0, 0, 0, 0.75);
-      color: #fff;
-      border-radius: 2px;
-      text-align: center;
-      gap: 14px;
-    }
-
-    #overlay h1 {
-      font-size: 42px;
-      color: #e94560;
-      text-shadow: 0 0 20px rgba(233, 69, 96, 0.8);
-    }
-
-    #overlay p {
-      font-size: 18px;
-      color: #ccc;
-    }
-
-    #overlay button {
-      margin-top: 6px;
-      padding: 12px 36px;
-      font-size: 18px;
-      background: #e94560;
-      color: #fff;
-      border: none;
-      border-radius: 6px;
-      cursor: pointer;
-      transition: background 0.2s, transform 0.1s;
-    }
-
-    #overlay button:hover {
-      background: #c73652;
-      transform: scale(1.05);
-    }
-
-    #controls {
-      margin-top: 12px;
-      color: #888;
-      font-size: 13px;
-    }
-  </style>
+<meta charset="UTF-8">
+<title>3D Wild Arena - Optimiert & Stabil</title>
+<style>
+body{margin:0;overflow:hidden;}
+canvas{display:block;}
+#ui{position:absolute;top:10px;left:10px;color:white;font-family:sans-serif;z-index:10;}
+#ui button{background:rgba(0,150,255,0.8);border:none;color:white;padding:8px 16px;margin:2px;border-radius:4px;cursor:pointer;}
+#ui button:hover{background:rgba(0,120,200,0.9);}
+#perspective-toggle{position:absolute;top:10px;right:10px;}
+#crosshair{position:absolute;top:50%;left:50%;width:20px;height:20px;transform:translate(-50%,-50%);color:white;font-size:24px;pointer-events:none;z-index:20;}
+</style>
 </head>
 <body>
-  <div id="gameContainer">
-    <canvas id="canvas"></canvas>
-    <div id="ui">
-      <span id="timerDisplay">Zeit: 0.0s</span>
-      <span id="levelDisplay">Level 1 / 3</span>
+<div id="ui">
+    <div>Gefangene Tiere: <span id="caught">0</span></div>
+    <button id="netBtn">Netz werfen (K)</button>
+    <div id="perspective-toggle">
+        <button id="togglePerspective">1st Person</button>
     </div>
-    <div id="overlay">
-      <h1>🟥 Quadrat-Parkour</h1>
-      <p>Spring über Plattformen und erreiche die Zielflagge!</p>
-      <div id="controls">
-        <strong>Steuerung:</strong> ← → / A D = Bewegen &nbsp;|&nbsp; ↑ / W / Leertaste = Springen
-      </div>
-      <button id="startBtn">Spiel starten</button>
-    </div>
-  </div>
+</div>
+<div id="crosshair">+</div>
 
-  <script>
-    // ─── Canvas setup ────────────────────────────────────────────────────────────
-    const canvas  = document.getElementById('canvas');
-    const ctx     = canvas.getContext('2d');
-    const W = canvas.width  = 900;
-    const H = canvas.height = 500;
+<script src="https://cdn.jsdelivr.net/npm/three@0.152.2/build/three.min.js"></script>
 
-    // ─── DOM elements ────────────────────────────────────────────────────────────
-    const overlay       = document.getElementById('overlay');
-    const startBtn      = document.getElementById('startBtn');
-    const timerDisplay  = document.getElementById('timerDisplay');
-    const levelDisplay  = document.getElementById('levelDisplay');
-    const overlayTitle  = overlay.querySelector('h1');
-    const overlayText   = overlay.querySelector('p');
+<script>
+// === KONFIGURATION ===
+const CONFIG = {
+    playerSpeed: 1.0,
+    animalSpeed: 0.2,
+    treeScale: 1.6,
+    playerScale: 1.4,
+    waterSpeed: 0.025,
+    gravity: 0.6,
+    worldSize: 2500,
+    segments: 500
+};
 
-    // ─── Game state ──────────────────────────────────────────────────────────────
-    const GRAVITY   = 0.55;
-    const JUMP_VEL  = -10;
-    const MOVE_SPD  = 4.5;
-    const PLAYER_SZ = 30;
+// === PERSPEKTIVE ===
+let isFirstPerson = true;
+let pointerLocked = false;
+let yaw = 0, pitch = 0;
+let mouseSensitivity = 0.002;
+const togglePerspectiveBtn = document.getElementById('togglePerspective');
+const crosshair = document.getElementById('crosshair');
 
-    let state       = 'menu';   // 'menu' | 'playing' | 'dead' | 'win'
-    let currentLevel = 0;
-    let startTime   = 0;
-    let elapsedTime = 0;
-    let bestTimes   = [];
-    let animId      = null;
+togglePerspectiveBtn.addEventListener('click', () => {
+    isFirstPerson = !isFirstPerson;
+    togglePerspectiveBtn.textContent = isFirstPerson ? '3rd Person' : '1st Person';
+    crosshair.style.opacity = isFirstPerson ? '1' : '0';
+});
 
-    // Keyboard
-    const keys = {};
-    document.addEventListener('keydown', e => {
-      keys[e.code] = true;
-      if (['Space','ArrowUp','ArrowLeft','ArrowRight'].includes(e.code)) {
-        e.preventDefault();
-      }
+// Pointer Lock
+document.addEventListener('click', () => {
+    if(isFirstPerson && !pointerLocked) {
+        document.body.requestPointerLock();
+    }
+});
+document.addEventListener('pointerlockchange', () => {
+    pointerLocked = document.pointerLockElement === document.body;
+});
+
+// === SZENE ===
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x87ceeb);
+const camera = new THREE.PerspectiveCamera(75, window.innerWidth/window.innerHeight, 0.1, 8000);
+const renderer = new THREE.WebGLRenderer({antialias:true});
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+document.body.appendChild(renderer.domElement);
+
+// === LICHT ===
+const sunLight = new THREE.DirectionalLight(0xfff2cc, 1.2);
+sunLight.position.set(150,300,-80);
+sunLight.castShadow = true;
+sunLight.shadow.mapSize.width = 2048;
+sunLight.shadow.mapSize.height = 2048;
+scene.add(sunLight);
+scene.add(new THREE.AmbientLight(0xffffff, 0.6));
+
+// === TERRAIN ===
+const terrainGeo = new THREE.PlaneGeometry(CONFIG.worldSize, CONFIG.worldSize, CONFIG.segments, CONFIG.segments);
+
+function organicHeight(x,y){
+    const s1 = 0.002, s2 = 0.006, s3 = 0.0012;
+    const bigHills  = Math.sin(x*s1)*50 + Math.cos(y*s1*1.2)*40;
+    const detail    = Math.sin((x+y)*s2)*12 + Math.cos((x-y)*s2*1.4)*8;
+    const longWaves = Math.sin(x*s3)*30 * Math.cos(y*s3*0.7);
+    const distToCenter = Math.sqrt(x*x + y*y);
+    const basin = -Math.max(0, 60 - distToCenter*0.04);
+    return bigHills + detail + longWaves + basin;
+}
+
+for(let i=0;i<terrainGeo.attributes.position.count;i++){
+    const x = terrainGeo.attributes.position.getX(i);
+    const y = terrainGeo.attributes.position.getY(i);
+    terrainGeo.attributes.position.setZ(i, organicHeight(x,y));
+}
+terrainGeo.computeVertexNormals();
+
+const terrainMat = new THREE.MeshStandardMaterial({
+    color: 0x228B22,
+    roughness: 0.85,
+    metalness: 0.02
+});
+const terrain = new THREE.Mesh(terrainGeo, terrainMat);
+terrain.rotation.x = -Math.PI/2;
+terrain.receiveShadow = true;
+scene.add(terrain);
+
+// === OPTIMIERTE BLAUES WELLEN-WASSER ===
+const waterLevel = -10;
+const waterGeo = new THREE.PlaneGeometry(1000, 1000, 50, 50); // Kleiner + weniger Segmente
+const waterMat = new THREE.MeshStandardMaterial({
+    color: 0x006994,
+    transparent: true,
+    opacity: 0.85,
+    roughness: 0.1,
+    metalness: 0.3
+});
+const water = new THREE.Mesh(waterGeo, waterMat);
+water.rotation.x = -Math.PI/2;
+water.position.y = waterLevel;
+scene.add(water);
+
+let waterTime = 0;
+
+// === HILFSFUNKTIONEN ===
+function getTerrainHeight(x,z){
+    const px = ((x+CONFIG.worldSize/2)/CONFIG.worldSize)*CONFIG.segments;
+    const pz = ((z+CONFIG.worldSize/2)/CONFIG.worldSize)*CONFIG.segments;
+    const ix = Math.floor(px);
+    const iz = Math.floor(pz);
+    const idx = iz*(CONFIG.segments+1)+ix;
+    if(idx<0 || idx>=terrainGeo.attributes.position.count) return 0;
+    return terrainGeo.attributes.position.getZ(idx);
+}
+function isLand(x,z){ return getTerrainHeight(x,z) >= waterLevel + 1; }
+
+// === SIMPLES NETZ (KEINE PARTIKEL-PHYSIK MEHR) ===
+let net = null;
+const netBtn = document.getElementById('netBtn');
+let keys = {};
+
+function createNet(){
+    if(net) return;
+    
+    // Einfaches Netz-Mesh
+    const netGeometry = new THREE.PlaneGeometry(10, 10, 8, 8);
+    const netMaterial = new THREE.MeshStandardMaterial({
+        color: 0x88cc88,
+        transparent: true,
+        opacity: 0.7,
+        wireframe: true
     });
-    document.addEventListener('keyup', e => { keys[e.code] = false; });
-
-    // ─── Level definitions ───────────────────────────────────────────────────────
-    // Each level: { platforms, spawnX, spawnY, goalX, goalY, bg }
-    // Platform: { x, y, w, h, color? }
-    const LEVELS = [
-      // ── Level 1 – "Der Anfang" ──────────────────────────────────────────────
-      {
-        name: 'Level 1 – Der Anfang',
-        bg: ['#0f3460', '#16213e'],
-        spawnX: 60, spawnY: 380,
-        platforms: [
-          // ground section
-          { x:   0, y: 420, w: 200, h: 20 },
-          { x: 240, y: 380, w: 120, h: 20 },
-          { x: 400, y: 340, w:  80, h: 20 },
-          { x: 510, y: 300, w:  80, h: 20 },
-          { x: 620, y: 260, w:  80, h: 20 },
-          // wider safe zone
-          { x: 720, y: 300, w: 180, h: 20 },
-          // goal platform
-          { x: 820, y: 300, w:  80, h: 20, isGoal: true },
-        ],
-        goal: { x: 848, y: 260 }
-      },
-      // ── Level 2 – "Die Lücken" ──────────────────────────────────────────────
-      {
-        name: 'Level 2 – Die Lücken',
-        bg: ['#1b1b2f', '#162032'],
-        spawnX: 40, spawnY: 420,
-        platforms: [
-          { x:   0, y: 450, w: 120, h: 20 },
-          { x: 160, y: 430, w:  60, h: 20 },
-          { x: 260, y: 400, w:  50, h: 20 },
-          { x: 350, y: 370, w:  50, h: 20 },
-          { x: 440, y: 340, w:  50, h: 20 },
-          { x: 530, y: 310, w:  50, h: 20 },
-          // wide rest platform
-          { x: 620, y: 310, w: 160, h: 20 },
-          // bouncing section
-          { x: 810, y: 280, w:  50, h: 20, bounce: true },
-          { x: 860, y: 240, w:  40, h: 20, isGoal: true },
-        ],
-        goal: { x: 862, y: 200 }
-      },
-      // ── Level 3 – "Der Gipfel" ──────────────────────────────────────────────
-      {
-        name: 'Level 3 – Der Gipfel',
-        bg: ['#0a0a1a', '#1a0a2e'],
-        spawnX: 30, spawnY: 440,
-        platforms: [
-          { x:   0, y: 460, w:  90, h: 20 },
-          { x: 130, y: 440, w:  45, h: 20 },
-          { x: 215, y: 410, w:  45, h: 20 },
-          { x: 300, y: 380, w:  45, h: 20 },
-          { x: 385, y: 350, w:  45, h: 20 },
-          { x: 470, y: 310, w:  45, h: 20 },
-          { x: 555, y: 270, w:  45, h: 20 },
-          { x: 640, y: 230, w:  45, h: 20 },
-          { x: 725, y: 190, w:  45, h: 20 },
-          // top landing / goal
-          { x: 810, y: 150, w: 100, h: 20, isGoal: true },
-        ],
-        goal: { x: 838, y: 110 }
-      }
-    ];
-
-    // ─── Player object ───────────────────────────────────────────────────────────
-    const player = {
-      x: 0, y: 0,
-      vx: 0, vy: 0,
-      w: PLAYER_SZ, h: PLAYER_SZ,
-      onGround: false,
-      jumpCount: 0,
-      maxJumps: 2,   // double jump allowed
-      color: '#e94560',
-      trail: [],
-      reset(level) {
-        this.x = level.spawnX;
-        this.y = level.spawnY - this.h;
-        this.vx = 0;
-        this.vy = 0;
-        this.onGround = false;
-        this.jumpCount = 0;
-        this.trail = [];
-      }
+    
+    net = {
+        mesh: new THREE.Mesh(netGeometry, netMaterial),
+        vy: 10,
+        life: 3000,
+        spawnTime: Date.now(),
+        caughtAnimals: []
     };
+    
+    // Startposition vor Spieler
+    net.mesh.position.copy(player.mesh.position);
+    net.mesh.position.y += 2.5;
+    const forward = new THREE.Vector3(0,0,-1).applyQuaternion(camera.quaternion);
+    forward.y = 0;
+    forward.normalize();
+    net.mesh.position.add(forward.multiplyScalar(12));
+    net.mesh.rotation.x = -Math.PI/2;
+    
+    net.mesh.castShadow = true;
+    scene.add(net.mesh);
+}
 
-    // ─── Particles ───────────────────────────────────────────────────────────────
-    let particles = [];
-
-    function spawnParticles(x, y, color, count) {
-      for (let i = 0; i < count; i++) {
-        const angle = Math.random() * Math.PI * 2;
-        const speed = 1 + Math.random() * 4;
-        particles.push({
-          x, y,
-          vx: Math.cos(angle) * speed,
-          vy: Math.sin(angle) * speed - 2,
-          life: 1,
-          decay: 0.03 + Math.random() * 0.04,
-          size: 3 + Math.random() * 5,
-          color
-        });
-      }
+function updateNet(deltaTime){
+    if(!net) return;
+    
+    // Lebensdauer
+    net.life -= deltaTime;
+    if(net.life <= 0){
+        scene.remove(net.mesh);
+        net = null;
+        return;
     }
-
-    // ─── AABB collision helper ───────────────────────────────────────────────────
-    function rectOverlap(ax, ay, aw, ah, bx, by, bw, bh) {
-      return ax < bx + bw && ax + aw > bx &&
-             ay < by + bh && ay + ah > by;
+    
+    // Einfache Physik
+    net.vy -= CONFIG.gravity * 1.5;
+    net.mesh.position.y += net.vy * 0.016;
+    
+    // Boden-Kollision
+    if(net.mesh.position.y < waterLevel + 2){
+        net.mesh.position.y = waterLevel + 2;
+        net.vy *= -0.4;
     }
-
-    // ─── Update ──────────────────────────────────────────────────────────────────
-    function update(dt) {
-      if (state !== 'playing') return;
-
-      const level = LEVELS[currentLevel];
-
-      // Horizontal movement
-      player.vx = 0;
-      if (keys['ArrowLeft']  || keys['KeyA']) player.vx = -MOVE_SPD;
-      if (keys['ArrowRight'] || keys['KeyD']) player.vx =  MOVE_SPD;
-
-      // Jump
-      if ((keys['ArrowUp'] || keys['KeyW'] || keys['Space'])) {
-        if (!keys['_jumpHeld'] && player.jumpCount < player.maxJumps) {
-          player.vy = JUMP_VEL;
-          player.jumpCount++;
-          keys['_jumpHeld'] = true;
-          spawnParticles(
-            player.x + player.w / 2,
-            player.y + player.h,
-            '#aad4f5', 8
-          );
+    
+    // Netz-Wackeln
+    const time = (Date.now() - net.spawnTime) * 0.005;
+    net.mesh.rotation.z = Math.sin(time * 4) * 0.15;
+    net.mesh.rotation.x = Math.sin(time * 3) * 0.1;
+    
+    // Tier-Fang
+    for(let i = animals.length - 1; i >= 0; i--){
+        const animal = animals[i];
+        if(net.mesh.position.distanceTo(animal.position) < 5){
+            scene.remove(animal);
+            animals.splice(i, 1);
+            animalStates.splice(i, 1);
+            net.caughtAnimals.push(animal);
+            break;
         }
-      } else {
-        keys['_jumpHeld'] = false;
-      }
+    }
+}
 
-      // Gravity
-      player.vy += GRAVITY;
+netBtn.addEventListener('click', createNet);
+document.addEventListener('keydown', e => {
+    keys[e.code] = true;
+    if(e.code === 'KeyK') createNet();
+});
+document.addEventListener('keyup', e => keys[e.code] = false);
 
-      // Move X
-      player.x += player.vx;
-      // Clamp to canvas width
-      if (player.x < 0) player.x = 0;
-      if (player.x + player.w > W) player.x = W - player.w;
+// === GRÖSSERER SPIELER ===
+const player = {mesh:null, speed:CONFIG.playerSpeed, vy:0, onGround:false, jumpPower:12, isMoving:false, animTime:0, x:0, y:40, z:0};
+let playerParts = [];
 
-      // Move Y
-      player.y += player.vy;
+function createPlayerModel(){
+    const group = new THREE.Group();
+    group.scale.set(CONFIG.playerScale, CONFIG.playerScale, CONFIG.playerScale);
+    group.visible = false;
 
-      // Platform collisions
-      player.onGround = false;
-      for (const plat of level.platforms) {
-        if (rectOverlap(player.x, player.y, player.w, player.h,
-                        plat.x, plat.y, plat.w, plat.h)) {
-          // Resolve: determine overlap direction
-          const overlapLeft   = (player.x + player.w) - plat.x;
-          const overlapRight  = (plat.x + plat.w)  - player.x;
-          const overlapTop    = (player.y + player.h) - plat.y;
-          const overlapBottom = (plat.y + plat.h)  - player.y;
-          const minOverlap    = Math.min(overlapLeft, overlapRight, overlapTop, overlapBottom);
+    const bodyGeo = new THREE.BoxGeometry(0.8,1.8,0.5);
+    const bodyMat = new THREE.MeshStandardMaterial({color:0x3366ff});
+    const body = new THREE.Mesh(bodyGeo, bodyMat);
+    body.position.y = 1.8;
+    body.castShadow = true;
+    group.add(body);
+    playerParts.push({mesh:body, type:'body'});
 
-          if (player.vy >= 0 && player.y < plat.y) {
-            // Falling and player top is above platform top → land on top
-            // This takes priority over side collisions so the player always
-            // lands correctly instead of getting stuck at platform edges.
-            player.y    = plat.y - player.h;
-            player.vy   = plat.bounce ? JUMP_VEL * 1.3 : 0;
-            player.onGround = !plat.bounce;
-            player.jumpCount = plat.bounce ? player.jumpCount : 0;
-          } else if (minOverlap === overlapBottom && player.vy < 0) {
-            player.y  = plat.y + plat.h;
-            player.vy = 0;
-          } else if (minOverlap === overlapLeft && player.vx > 0) {
-            player.x  = plat.x - player.w;
-            player.vx = 0;
-          } else if (minOverlap === overlapRight && player.vx < 0) {
-            player.x  = plat.x + plat.w;
-            player.vx = 0;
-          }
+    const headGeo = new THREE.BoxGeometry(0.45,0.45,0.45);
+    const headMat = new THREE.MeshStandardMaterial({color:0xffdbac});
+    const head = new THREE.Mesh(headGeo, headMat);
+    head.position.y = 2.6;
+    head.castShadow = true;
+    group.add(head);
+    playerParts.push({mesh:head, type:'head'});
+
+    const armGeo = new THREE.BoxGeometry(0.2,0.9,0.25);
+    const armMat = new THREE.MeshStandardMaterial({color:0x3366ff});
+    const leftArm = new THREE.Mesh(armGeo, armMat);
+    leftArm.position.set(-0.55,1.65,0);
+    leftArm.castShadow = true;
+    const rightArm = new THREE.Mesh(armGeo, armMat);
+    rightArm.position.set(0.55,1.65,0);
+    rightArm.castShadow = true;
+    group.add(leftArm);
+    group.add(rightArm);
+    playerParts.push({mesh:leftArm, type:'arm'});
+    playerParts.push({mesh:rightArm, type:'arm'});
+
+    const legGeo = new THREE.BoxGeometry(0.25,1.2,0.3);
+    const legMat = new THREE.MeshStandardMaterial({color:0x222222});
+    const leftLeg = new THREE.Mesh(legGeo, legMat);
+    leftLeg.position.set(-0.2,0.6,0);
+    leftLeg.castShadow = true;
+    const rightLeg = new THREE.Mesh(legGeo, legMat);
+    rightLeg.position.set(0.2,0.6,0);
+    rightLeg.castShadow = true;
+    group.add(leftLeg);
+    group.add(rightLeg);
+    playerParts.push({mesh:leftLeg, type:'leg'});
+    playerParts.push({mesh:rightLeg, type:'leg'});
+
+    return group;
+}
+
+player.mesh = createPlayerModel();
+player.mesh.position.set(0,40,0);
+scene.add(player.mesh);
+
+function updatePlayerAnimation(deltaTime){
+    player.animTime += deltaTime * 0.005;
+    playerParts.forEach((part, index) => {
+        if(part.type === 'leg'){
+            const legIndex = playerParts.indexOf(part);
+            const swing = Math.sin(player.animTime * 10 + legIndex) * 0.4;
+            part.mesh.rotation.z = swing * (player.isMoving ? 1 : 0.2);
+            part.mesh.rotation.x = Math.abs(swing) * 0.25 * (player.isMoving ? 1 : 0.2);
         }
-      }
-
-      // Trail
-      player.trail.push({ x: player.x + player.w / 2, y: player.y + player.h / 2 });
-      if (player.trail.length > 18) player.trail.shift();
-
-      // Goal collision
-      const goal = level.goal;
-      if (rectOverlap(player.x, player.y, player.w, player.h, goal.x, goal.y, 30, 50)) {
-        elapsedTime = (Date.now() - startTime) / 1000;
-        bestTimes[currentLevel] = (bestTimes[currentLevel] === undefined)
-          ? elapsedTime
-          : Math.min(bestTimes[currentLevel], elapsedTime);
-        spawnParticles(goal.x + 15, goal.y + 25, '#ffd700', 30);
-        if (currentLevel < LEVELS.length - 1) {
-          state = 'nextLevel';
-          showOverlay(
-            '🎉 Ziel erreicht!',
-            `Zeit: ${elapsedTime.toFixed(1)}s — Weiter zum nächsten Level!`,
-            'Nächstes Level'
-          );
-        } else {
-          state = 'win';
-          showOverlay(
-            '🏆 Gewonnen!',
-            `Du hast alle Level geschafft!\nZeit: ${elapsedTime.toFixed(1)}s`,
-            'Nochmal spielen'
-          );
+        else if(part.type === 'arm'){
+            const armIndex = playerParts.indexOf(part);
+            const swing = Math.sin(player.animTime * 10 + (armIndex % 2)) * 0.35;
+            part.mesh.rotation.z = -swing * (player.isMoving ? 1 : 0.2);
         }
-      }
-
-      // Fall out of screen
-      if (player.y > H + 100) {
-        spawnParticles(player.x + player.w / 2, H, '#e94560', 15);
-        state = 'dead';
-        showOverlay('💀 Du bist gefallen!', 'Versuch es nochmal.', 'Neu starten');
-      }
-
-      // Update particles
-      particles = particles.filter(p => p.life > 0);
-      for (const p of particles) {
-        p.x    += p.vx;
-        p.y    += p.vy;
-        p.vy   += 0.1;
-        p.life -= p.decay;
-      }
-
-      // Timer display
-      if (state === 'playing') {
-        elapsedTime = (Date.now() - startTime) / 1000;
-        timerDisplay.textContent = `Zeit: ${elapsedTime.toFixed(1)}s`;
-      }
-    }
-
-    // ─── Draw ─────────────────────────────────────────────────────────────────────
-    function draw() {
-      const level = LEVELS[currentLevel];
-
-      // Background gradient
-      const grad = ctx.createLinearGradient(0, 0, 0, H);
-      grad.addColorStop(0, level.bg[0]);
-      grad.addColorStop(1, level.bg[1]);
-      ctx.fillStyle = grad;
-      ctx.fillRect(0, 0, W, H);
-
-      // Decorative background stars
-      drawStars();
-
-      // Platforms
-      for (const plat of level.platforms) {
-        const isGoal = plat.isGoal;
-        const isBounce = plat.bounce;
-        if (isGoal) {
-          ctx.fillStyle = '#ffd700';
-          ctx.shadowColor = '#ffd700';
-          ctx.shadowBlur = 12;
-        } else if (isBounce) {
-          ctx.fillStyle = '#7cfc00';
-          ctx.shadowColor = '#7cfc00';
-          ctx.shadowBlur = 10;
-        } else {
-          ctx.fillStyle = '#4a90d9';
-          ctx.shadowColor = '#4a90d9';
-          ctx.shadowBlur = 6;
-        }
-        ctx.fillRect(plat.x, plat.y, plat.w, plat.h);
-
-        // Top edge highlight
-        ctx.fillStyle = 'rgba(255,255,255,0.25)';
-        ctx.fillRect(plat.x, plat.y, plat.w, 3);
-        ctx.shadowBlur = 0;
-      }
-
-      // Goal flag
-      const goal = level.goal;
-      drawFlag(goal.x, goal.y);
-
-      // Spawn indicator (first few seconds)
-      if (elapsedTime < 1.5 && state === 'playing') {
-        ctx.save();
-        ctx.globalAlpha = 1 - elapsedTime / 1.5;
-        ctx.fillStyle = '#fff';
-        ctx.font = 'bold 14px sans-serif';
-        ctx.fillText('START', level.spawnX, level.spawnY - player.h - 6);
-        ctx.restore();
-      }
-
-      // Trail
-      for (let i = 0; i < player.trail.length; i++) {
-        const t = player.trail[i];
-        const alpha = (i / player.trail.length) * 0.4;
-        const size  = (i / player.trail.length) * player.w * 0.7;
-        ctx.globalAlpha = alpha;
-        ctx.fillStyle = player.color;
-        ctx.fillRect(t.x - size / 2, t.y - size / 2, size, size);
-      }
-      ctx.globalAlpha = 1;
-
-      // Player
-      ctx.save();
-      ctx.shadowColor = player.color;
-      ctx.shadowBlur  = 18;
-      ctx.fillStyle   = player.color;
-      ctx.fillRect(player.x, player.y, player.w, player.h);
-      // Eyes
-      ctx.fillStyle = '#fff';
-      const eyeY = player.y + 8;
-      ctx.fillRect(player.x + 6,  eyeY, 6, 6);
-      ctx.fillRect(player.x + 18, eyeY, 6, 6);
-      ctx.fillStyle = '#1a1a2e';
-      const pupilOffX = player.vx > 0 ? 2 : (player.vx < 0 ? 0 : 1);
-      ctx.fillRect(player.x + 7  + pupilOffX, eyeY + 1, 3, 3);
-      ctx.fillRect(player.x + 19 + pupilOffX, eyeY + 1, 3, 3);
-      ctx.restore();
-
-      // Particles
-      for (const p of particles) {
-        ctx.globalAlpha = Math.max(0, p.life);
-        ctx.fillStyle   = p.color;
-        ctx.beginPath();
-        ctx.arc(p.x, p.y, p.size * p.life, 0, Math.PI * 2);
-        ctx.fill();
-      }
-      ctx.globalAlpha = 1;
-    }
-
-    // ─── Stars (decorative) ───────────────────────────────────────────────────────
-    const starCache = [];
-    function buildStars() {
-      for (let i = 0; i < 80; i++) {
-        starCache.push({
-          x: Math.random() * W,
-          y: Math.random() * H,
-          r: 0.5 + Math.random() * 1.5,
-          a: 0.2 + Math.random() * 0.6
-        });
-      }
-    }
-    buildStars();
-
-    function drawStars() {
-      ctx.save();
-      for (const s of starCache) {
-        ctx.globalAlpha = s.a;
-        ctx.fillStyle   = '#fff';
-        ctx.beginPath();
-        ctx.arc(s.x, s.y, s.r, 0, Math.PI * 2);
-        ctx.fill();
-      }
-      ctx.restore();
-    }
-
-    // ─── Flag ─────────────────────────────────────────────────────────────────────
-    function drawFlag(x, y) {
-      const now = Date.now() / 600;
-      // Pole
-      ctx.strokeStyle = '#ccc';
-      ctx.lineWidth   = 3;
-      ctx.beginPath();
-      ctx.moveTo(x + 3, y + 50);
-      ctx.lineTo(x + 3, y);
-      ctx.stroke();
-      // Waving flag
-      ctx.fillStyle = '#ffd700';
-      ctx.shadowColor = '#ffd700';
-      ctx.shadowBlur  = 14;
-      ctx.beginPath();
-      ctx.moveTo(x + 3, y);
-      ctx.lineTo(x + 3 + 22, y + 5 + Math.sin(now) * 4);
-      ctx.lineTo(x + 3 + 22, y + 16 + Math.sin(now + 0.5) * 4);
-      ctx.lineTo(x + 3, y + 20);
-      ctx.closePath();
-      ctx.fill();
-      ctx.shadowBlur = 0;
-    }
-
-    // ─── Overlay helper ───────────────────────────────────────────────────────────
-    function showOverlay(title, text, btnLabel) {
-      overlayTitle.textContent = title;
-      overlayText.textContent  = text;
-      startBtn.textContent     = btnLabel;
-      overlay.style.display    = 'flex';
-    }
-
-    // ─── Start / restart ──────────────────────────────────────────────────────────
-    function startGame(levelIndex) {
-      currentLevel = levelIndex;
-      particles    = [];
-      state        = 'playing';
-      startTime    = Date.now();
-      elapsedTime  = 0;
-      player.reset(LEVELS[currentLevel]);
-      levelDisplay.textContent = `Level ${currentLevel + 1} / ${LEVELS.length}`;
-      timerDisplay.textContent = 'Zeit: 0.0s';
-      overlay.style.display    = 'none';
-    }
-
-    startBtn.addEventListener('click', () => {
-      if (state === 'nextLevel') {
-        startGame(currentLevel + 1);
-      } else if (state === 'win') {
-        startGame(0);
-      } else {
-        // menu or dead → restart current or from beginning
-        startGame(state === 'dead' ? currentLevel : 0);
-      }
     });
+}
 
-    // ─── Game loop ────────────────────────────────────────────────────────────────
-    let lastTime = 0;
-    function loop(ts) {
-      const dt = Math.min((ts - lastTime) / 16.67, 3);
-      lastTime  = ts;
-      update(dt);
-      draw();
-      animId = requestAnimationFrame(loop);
+function createLandAnimal(){
+    const animal = new THREE.Group();
+    const bodyGeo = new THREE.BoxGeometry(1.4,0.7,2.4);
+    const bodyMat = new THREE.MeshStandardMaterial({color: new THREE.Color().setHSL(Math.random()*0.1 + 0.05, 0.7, 0.4)});
+    const body = new THREE.Mesh(bodyGeo, bodyMat);
+    body.position.y = 0.7;
+    body.castShadow = true;
+    animal.add(body);
+
+    const headGeo = new THREE.BoxGeometry(0.7,0.6,0.7);
+    const head = new THREE.Mesh(headGeo, bodyMat);
+    head.position.set(0,0.9,1.3);
+    head.castShadow = true;
+    animal.add(head);
+
+    const legGeo = new THREE.BoxGeometry(0.25,0.6,0.25);
+    const legMat = new THREE.MeshStandardMaterial({color:0x4b2e15});
+    const legPositions = [
+        [-0.45,0.3,0.7], [0.45,0.3,0.7],
+        [-0.45,0.3,-0.8], [0.45,0.3,-0.8]
+    ];
+    legPositions.forEach(p=>{
+        const leg = new THREE.Mesh(legGeo, legMat);
+        leg.position.set(p[0],p[1],p[2]);
+        leg.castShadow = true;
+        animal.add(leg);
+    });
+    return animal;
+}
+
+function createWaterAnimal(){
+    const fish = new THREE.Group();
+    const bodyGeo = new THREE.CylinderGeometry(0.3, 0.4, 1.2, 8);
+    const bodyMat = new THREE.MeshStandardMaterial({color: new THREE.Color().setHSL(Math.random()*0.3 + 0.5, 0.8, 0.5)});
+    const body = new THREE.Mesh(bodyGeo, bodyMat);
+    body.rotation.z = Math.PI/2;
+    fish.add(body);
+
+    const tailGeo = new THREE.ConeGeometry(0.35, 0.8, 6);
+    const tail = new THREE.Mesh(tailGeo, bodyMat);
+    tail.position.set(0.8, 0, 0);
+    tail.rotation.z = Math.PI/2;
+    fish.add(tail);
+
+    return fish;
+}
+
+const animals = [];
+const waterAnimals = [];
+const animalStates = [];
+const waterAnimalStates = [];
+const caughtUI = document.getElementById("caught");
+const TOTAL_ANIMALS = 100;
+
+// Landtiere
+for(let i=0;i<70;i++){
+    const mesh = createLandAnimal();
+    let x,z,y;
+    do{
+        x = (Math.random()-0.5)*CONFIG.worldSize*0.7;
+        z = (Math.random()-0.5)*CONFIG.worldSize*0.7;
+        y = getTerrainHeight(x,z)+0.8;
+    }while(!isLand(x,z));
+    
+    mesh.position.set(x,y,z);
+    const dirAngle = Math.random()*Math.PI*2;
+    mesh.rotation.y = dirAngle;
+    animals.push(mesh);
+    scene.add(mesh);
+    
+    const dir = new THREE.Vector3(Math.sin(dirAngle),0,Math.cos(dirAngle));
+    animalStates.push({
+        dir, speed: CONFIG.animalSpeed * (0.8 + Math.random()*0.4),
+        changeTime: Date.now() + 2000 + Math.random()*4000
+    });
+}
+
+// Wassertiere
+for(let i=0;i<30;i++){
+    const mesh = createWaterAnimal();
+    let x,z;
+    do{
+        x = (Math.random()-0.5)*CONFIG.worldSize*0.8;
+        z = (Math.random()-0.5)*CONFIG.worldSize*0.8;
+    }while(isLand(x,z));
+    
+    mesh.position.set(x, waterLevel + 0.5, z);
+    const dirAngle = Math.random()*Math.PI*2;
+    mesh.rotation.y = dirAngle;
+    waterAnimals.push(mesh);
+    scene.add(mesh);
+    
+    const dir = new THREE.Vector3(Math.sin(dirAngle),0,Math.cos(dirAngle));
+    waterAnimalStates.push({
+        dir, speed: CONFIG.animalSpeed * 0.6,
+        changeTime: Date.now() + 1000 + Math.random()*3000,
+        depth: 0.3 + Math.random()*0.4
+    });
+}
+
+// === BÄUME ===
+function spawnVegetation(){
+    for(let i=0;i<400;i++){
+        const height = (8 + Math.random()*5) * CONFIG.treeScale;
+        const crownRadius = (2 + Math.random()*1.2) * CONFIG.treeScale;
+        const trunkHeight = height * 0.35;
+        
+        const trunkGeo = new THREE.CylinderGeometry(0.4*CONFIG.treeScale,0.6*CONFIG.treeScale,trunkHeight,8);
+        const trunkMat = new THREE.MeshStandardMaterial({color:0x5b3a1a});
+        const trunk = new THREE.Mesh(trunkGeo,trunkMat);
+        trunk.castShadow = true;
+
+        const crownGeo = new THREE.ConeGeometry(crownRadius,height*0.65,10);
+        const crownMat = new THREE.MeshStandardMaterial({color:0x0b6623});
+        const crown = new THREE.Mesh(crownGeo,crownMat);
+        crown.position.y = trunkHeight/2 + height*0.325;
+        crown.castShadow = true;
+
+        const tree = new THREE.Group();
+        tree.add(trunk);
+        tree.add(crown);
+
+        let x,z,y;
+        do{
+            x = (Math.random()-0.5)*CONFIG.worldSize*0.9;
+            z = (Math.random()-0.5)*CONFIG.worldSize*0.9;
+            y = getTerrainHeight(x,z);
+        }while(!isLand(x,z));
+
+        tree.position.set(x, y, z);
+        scene.add(tree);
     }
+}
+spawnVegetation();
+
+document.addEventListener('mousemove', (e) => {
+    if(!isFirstPerson || !pointerLocked) return;
+    yaw -= e.movementX * mouseSensitivity;
+    pitch -= e.movementY * mouseSensitivity;
+    pitch = Math.max(-Math.PI/2, Math.min(Math.PI/2, pitch));
+});
+
+function updateCamera() {
+    player.x = player.mesh.position.x;
+    player.y = player.mesh.position.y;
+    player.z = player.mesh.position.z;
+    
+    if(isFirstPerson) {
+        camera.position.set(player.x, player.y + 2.2, player.z);
+        camera.rotation.order = 'YXZ';
+        camera.rotation.y = yaw;
+        camera.rotation.x = pitch;
+    } else {
+        const radius = 20;
+        const camX = player.x + radius * Math.sin(yaw + Math.PI) * Math.cos(pitch);
+        const camY = player.y + radius * Math.sin(pitch) + 8;
+        const camZ = player.z + radius * Math.cos(yaw + Math.PI) * Math.cos(pitch);
+        camera.position.set(camX, camY, camZ);
+        camera.lookAt(player.x, player.y + 2, player.z);
+    }
+
+    const forward = new THREE.Vector3(0,0,-1);
+    forward.applyQuaternion(camera.quaternion);
+    forward.y = 0;
+    forward.normalize();
+    
+    const right = new THREE.Vector3();
+    right.crossVectors(forward, new THREE.Vector3(0,1,0)).normalize();
+
+    let moveDir = new THREE.Vector3();
+    if(keys["KeyW"]) moveDir.add(forward);
+    if(keys["KeyS"]) moveDir.add(forward.clone().negate());
+    if(keys["KeyA"]) moveDir.add(right.clone().negate());
+    if(keys["KeyD"]) moveDir.add(right);
+
+    player.isMoving = moveDir.lengthSq() > 0;
+    
+    if(moveDir.lengthSq() > 0){
+        moveDir.normalize().multiplyScalar(player.speed);
+        player.mesh.position.add(moveDir);
+        player.x += moveDir.x;
+        player.z += moveDir.z;
+    }
+}
+
+function updateAnimals(deltaTime){
+    const now = Date.now();
+    
+    for(let i=0;i<animals.length;i++){
+        const a = animals[i];
+        const state = animalStates[i];
+        if(now > state.changeTime){
+            const angleChange = (Math.random()-0.5) * Math.PI/2;
+            const currentAngle = Math.atan2(state.dir.x, state.dir.z);
+            const newAngle = currentAngle + angleChange;
+            state.dir.set(Math.sin(newAngle),0,Math.cos(newAngle));
+            state.speed = CONFIG.animalSpeed * (0.8 + Math.random()*0.4);
+            state.changeTime = now + 1500 + Math.random()*4000;
+        }
+        const move = state.dir.clone().multiplyScalar(state.speed * deltaTime*0.06);
+        a.position.add(move);
+        const border = CONFIG.worldSize*0.45;
+        if(Math.abs(a.position.x) > border || Math.abs(a.position.z) > border || !isLand(a.position.x,a.position.z)){
+            state.dir.multiplyScalar(-1);
+        }
+        const terrainY = getTerrainHeight(a.position.x,a.position.z)+0.8;
+        a.position.y = terrainY + Math.sin(now*0.003 + i)*0.1;
+        const angle = Math.atan2(state.dir.x, state.dir.z);
+        a.rotation.y = angle;
+    }
+    
+    for(let i=0;i<waterAnimals.length;i++){
+        const fish = waterAnimals[i];
+        const state = waterAnimalStates[i];
+        if(now > state.changeTime){
+            const angleChange = (Math.random()-0.5) * Math.PI;
+            const currentAngle = Math.atan2(state.dir.x, state.dir.z);
+            const newAngle = currentAngle + angleChange;
+            state.dir.set(Math.sin(newAngle),0,Math.cos(newAngle));
+            state.speed = CONFIG.animalSpeed * 0.5;
+            state.changeTime = now + 1000 + Math.random()*3000;
+        }
+        const move = state.dir.clone().multiplyScalar(state.speed * deltaTime*0.06);
+        fish.position.add(move);
+        
+        const border = CONFIG.worldSize*0.4;
+        if(Math.abs(fish.position.x) > border || Math.abs(fish.position.z) > border){
+            state.dir.multiplyScalar(-1);
+        }
+        
+        const waveTime = now * 0.002 + i;
+        fish.position.y = waterLevel + 0.5 + Math.sin(waveTime) * state.depth;
+        fish.rotation.y = Math.atan2(state.dir.x, state.dir.z);
+        fish.rotation.z = Math.sin(waveTime * 2) * 0.2;
+    }
+}
+
+// === HAUPTSCHLEIFE ===
+let lastTime = performance.now();
+function loop(){
+    const currentTime = performance.now();
+    const deltaTime = Math.min(currentTime - lastTime, 16.67); // Max 60fps
+    lastTime = currentTime;
+
+    // Spielerphysik
+    if(keys["Space"] && player.onGround){
+        player.vy = player.jumpPower;
+        player.onGround = false;
+    }
+    const groundY = getTerrainHeight(player.mesh.position.x, player.mesh.position.z) + 1.8;
+    if(player.mesh.position.y > groundY){
+        player.vy -= CONFIG.gravity;
+    } else {
+        player.vy = 0;
+        player.mesh.position.y = groundY;
+        player.onGround = true;
+    }
+    player.mesh.position.y += player.vy;
+    player.y = player.mesh.position.y;
+
+    // OPTIMIERTE Wasserwellen (nur alle 5 Frames)
+    waterTime += deltaTime * CONFIG.waterSpeed;
+    if(Math.floor(waterTime * 5) % 5 === 0) {
+        for(let i = 0; i < waterGeo.attributes.position.count; i++) {
+            const x = waterGeo.attributes.position.getX(i);
+            const z = waterGeo.attributes.position.getZ(i);
+            const wave1 = Math.sin(x * 0.015 + waterTime) * 0.8;
+            const wave2 = Math.sin(z * 0.01 + waterTime * 0.7) * 0.5;
+            waterGeo.attributes.position.setY(i, wave1 + wave2);
+        }
+        waterGeo.attributes.position.needsUpdate = true;
+        waterGeo.computeVertexNormals();
+    }
+
+    player.mesh.visible = !isFirstPerson;
+    updatePlayerAnimation(deltaTime);
+    updateAnimals(deltaTime);
+    updateNet(deltaTime);
+
+    caughtUI.textContent = TOTAL_ANIMALS - animals.length - waterAnimals.length;
+
+    updateCamera();
+    renderer.render(scene, camera);
     requestAnimationFrame(loop);
-  </script>
+}
+loop();
+
+window.addEventListener('resize', ()=>{
+    camera.aspect = window.innerWidth/window.innerHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(window.innerWidth, window.innerHeight);
+});
+</script>
 </body>
 </html>
