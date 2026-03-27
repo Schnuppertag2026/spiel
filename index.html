@@ -1,0 +1,560 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Quadrat-Parkour</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      background: #1a1a2e;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      height: 100vh;
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+      overflow: hidden;
+    }
+
+    #gameContainer {
+      position: relative;
+    }
+
+    canvas {
+      display: block;
+      border: 3px solid #e94560;
+      border-radius: 4px;
+      box-shadow: 0 0 30px rgba(233, 69, 96, 0.4);
+    }
+
+    #ui {
+      position: absolute;
+      top: 10px;
+      left: 10px;
+      color: #fff;
+      font-size: 15px;
+      pointer-events: none;
+    }
+
+    #ui span {
+      display: inline-block;
+      background: rgba(0, 0, 0, 0.5);
+      padding: 4px 10px;
+      border-radius: 4px;
+      margin-right: 8px;
+    }
+
+    #overlay {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      background: rgba(0, 0, 0, 0.75);
+      color: #fff;
+      border-radius: 2px;
+      text-align: center;
+      gap: 14px;
+    }
+
+    #overlay h1 {
+      font-size: 42px;
+      color: #e94560;
+      text-shadow: 0 0 20px rgba(233, 69, 96, 0.8);
+    }
+
+    #overlay p {
+      font-size: 18px;
+      color: #ccc;
+    }
+
+    #overlay button {
+      margin-top: 6px;
+      padding: 12px 36px;
+      font-size: 18px;
+      background: #e94560;
+      color: #fff;
+      border: none;
+      border-radius: 6px;
+      cursor: pointer;
+      transition: background 0.2s, transform 0.1s;
+    }
+
+    #overlay button:hover {
+      background: #c73652;
+      transform: scale(1.05);
+    }
+
+    #controls {
+      margin-top: 12px;
+      color: #888;
+      font-size: 13px;
+    }
+  </style>
+</head>
+<body>
+  <div id="gameContainer">
+    <canvas id="canvas"></canvas>
+    <div id="ui">
+      <span id="timerDisplay">Zeit: 0.0s</span>
+      <span id="levelDisplay">Level 1 / 3</span>
+    </div>
+    <div id="overlay">
+      <h1>🟥 Quadrat-Parkour</h1>
+      <p>Spring über Plattformen und erreiche die Zielflagge!</p>
+      <div id="controls">
+        <strong>Steuerung:</strong> ← → / A D = Bewegen &nbsp;|&nbsp; ↑ / W / Leertaste = Springen
+      </div>
+      <button id="startBtn">Spiel starten</button>
+    </div>
+  </div>
+
+  <script>
+    // ─── Canvas setup ────────────────────────────────────────────────────────────
+    const canvas  = document.getElementById('canvas');
+    const ctx     = canvas.getContext('2d');
+    const W = canvas.width  = 900;
+    const H = canvas.height = 500;
+
+    // ─── DOM elements ────────────────────────────────────────────────────────────
+    const overlay       = document.getElementById('overlay');
+    const startBtn      = document.getElementById('startBtn');
+    const timerDisplay  = document.getElementById('timerDisplay');
+    const levelDisplay  = document.getElementById('levelDisplay');
+    const overlayTitle  = overlay.querySelector('h1');
+    const overlayText   = overlay.querySelector('p');
+
+    // ─── Physics constants ───────────────────────────────────────────────────────
+    const GRAVITY   = 0.55;   // added to vy each frame (positive = downward)
+    const JUMP_VEL  = -11;    // initial vertical velocity on jump (negative = upward)
+    const MOVE_SPD  = 4.5;
+    const PLAYER_SZ = 30;
+
+    // ─── Game state ──────────────────────────────────────────────────────────────
+    let state        = 'menu';
+    let currentLevel = 0;
+    let startTime    = 0;
+    let elapsedTime  = 0;
+    let bestTimes    = [];
+    let animId       = null;
+
+    // ─── Keyboard ────────────────────────────────────────────────────────────────
+    const keys = {};
+    document.addEventListener('keydown', e => {
+      keys[e.code] = true;
+      if (['Space', 'ArrowUp', 'ArrowLeft', 'ArrowRight'].includes(e.code)) {
+        e.preventDefault();
+      }
+    });
+    document.addEventListener('keyup', e => { keys[e.code] = false; });
+
+    // ─── Level definitions ───────────────────────────────────────────────────────
+    const LEVELS = [
+      // ── Level 1 – "Der Anfang" ──────────────────────────────────────────────
+      {
+        name: 'Level 1 – Der Anfang',
+        bg: ['#0f3460', '#16213e'],
+        spawnX: 60, spawnY: 380,
+        platforms: [
+          { x:   0, y: 420, w: 200, h: 20 },
+          { x: 240, y: 380, w: 120, h: 20 },
+          { x: 400, y: 340, w:  80, h: 20 },
+          { x: 510, y: 300, w:  80, h: 20 },
+          { x: 620, y: 260, w:  80, h: 20 },
+          { x: 720, y: 300, w: 180, h: 20 },
+          { x: 820, y: 300, w:  80, h: 20, isGoal: true },
+        ],
+        goal: { x: 848, y: 260 }
+      },
+      // ── Level 2 – "Die Lücken" ──────────────────────────────────────────────
+      {
+        name: 'Level 2 – Die Lücken',
+        bg: ['#1b1b2f', '#162032'],
+        spawnX: 40, spawnY: 420,
+        platforms: [
+          { x:   0, y: 450, w: 120, h: 20 },
+          { x: 160, y: 430, w:  60, h: 20 },
+          { x: 260, y: 400, w:  50, h: 20 },
+          { x: 350, y: 370, w:  50, h: 20 },
+          { x: 440, y: 340, w:  50, h: 20 },
+          { x: 530, y: 310, w:  50, h: 20 },
+          { x: 620, y: 310, w: 160, h: 20 },
+          { x: 810, y: 280, w:  50, h: 20, bounce: true },
+          { x: 860, y: 240, w:  40, h: 20, isGoal: true },
+        ],
+        goal: { x: 862, y: 200 }
+      },
+      // ── Level 3 – "Der Gipfel" ──────────────────────────────────────────────
+      {
+        name: 'Level 3 – Der Gipfel',
+        bg: ['#0a0a1a', '#1a0a2e'],
+        spawnX: 30, spawnY: 440,
+        platforms: [
+          { x:   0, y: 460, w:  90, h: 20 },
+          { x: 130, y: 440, w:  45, h: 20 },
+          { x: 215, y: 410, w:  45, h: 20 },
+          { x: 300, y: 380, w:  45, h: 20 },
+          { x: 385, y: 350, w:  45, h: 20 },
+          { x: 470, y: 310, w:  45, h: 20 },
+          { x: 555, y: 270, w:  45, h: 20 },
+          { x: 640, y: 230, w:  45, h: 20 },
+          { x: 725, y: 190, w:  45, h: 20 },
+          { x: 810, y: 150, w: 100, h: 20, isGoal: true },
+        ],
+        goal: { x: 838, y: 110 }
+      }
+    ];
+
+    // ─── Player object ───────────────────────────────────────────────────────────
+    const player = {
+      x: 0, y: 0,
+      vx: 0, vy: 0,
+      w: PLAYER_SZ, h: PLAYER_SZ,
+      onGround: false,
+      jumpCount: 0,
+      maxJumps: 2,
+      color: '#e94560',
+      trail: [],
+      reset(level) {
+        this.x = level.spawnX;
+        this.y = level.spawnY - this.h;
+        this.vx = 0;
+        this.vy = 0;
+        this.onGround = false;
+        this.jumpCount = 0;
+        this.trail = [];
+      }
+    };
+
+    // ─── Particles ───────────────────────────────────────────────────────────────
+    let particles = [];
+
+    function spawnParticles(x, y, color, count) {
+      for (let i = 0; i < count; i++) {
+        const angle = Math.random() * Math.PI * 2;
+        const speed = 1 + Math.random() * 4;
+        particles.push({
+          x, y,
+          vx: Math.cos(angle) * speed,
+          vy: Math.sin(angle) * speed - 2,
+          life: 1,
+          decay: 0.03 + Math.random() * 0.04,
+          size: 3 + Math.random() * 5,
+          color
+        });
+      }
+    }
+
+    // ─── AABB overlap check ──────────────────────────────────────────────────────
+    function rectOverlap(ax, ay, aw, ah, bx, by, bw, bh) {
+      return ax < bx + bw && ax + aw > bx &&
+             ay < by + bh && ay + ah > by;
+    }
+
+    // ─── Update ──────────────────────────────────────────────────────────────────
+    function update() {
+      if (state !== 'playing') return;
+
+      const level = LEVELS[currentLevel];
+
+      // ── Horizontal input ─────────────────────────────────────────────────────
+      player.vx = 0;
+      if (keys['ArrowLeft']  || keys['KeyA']) player.vx = -MOVE_SPD;
+      if (keys['ArrowRight'] || keys['KeyD']) player.vx =  MOVE_SPD;
+
+      // ── Jump input ───────────────────────────────────────────────────────────
+      // _jumpHeld prevents holding the key from triggering repeated jumps.
+      if (keys['ArrowUp'] || keys['KeyW'] || keys['Space']) {
+        if (!keys['_jumpHeld'] && player.jumpCount < player.maxJumps) {
+          player.vy = JUMP_VEL;
+          player.jumpCount++;
+          keys['_jumpHeld'] = true;
+          spawnParticles(player.x + player.w / 2, player.y + player.h, '#aad4f5', 8);
+        }
+      } else {
+        keys['_jumpHeld'] = false;
+      }
+
+      // ── Apply gravity ────────────────────────────────────────────────────────
+      // Gravity accelerates the player downward every frame.
+      player.vy += GRAVITY;
+
+      // ── Move & resolve X axis ────────────────────────────────────────────────
+      player.x += player.vx;
+      // Canvas boundary
+      if (player.x < 0)           player.x = 0;
+      if (player.x + player.w > W) player.x = W - player.w;
+
+      // X-axis platform collisions (side walls only)
+      for (const plat of level.platforms) {
+        if (rectOverlap(player.x, player.y, player.w, player.h,
+                        plat.x, plat.y, plat.w, plat.h)) {
+          if (player.vx > 0) {
+            player.x = plat.x - player.w;
+          } else if (player.vx < 0) {
+            player.x = plat.x + plat.w;
+          }
+          player.vx = 0;
+        }
+      }
+
+      // ── Move & resolve Y axis ────────────────────────────────────────────────
+      player.y += player.vy;
+
+      // Y-axis platform collisions (landing on top / hitting ceiling)
+      player.onGround = false;
+      for (const plat of level.platforms) {
+        if (rectOverlap(player.x, player.y, player.w, player.h,
+                        plat.x, plat.y, plat.w, plat.h)) {
+          if (player.vy >= 0) {
+            // Falling down – land on top of platform
+            player.y = plat.y - player.h;
+            if (plat.bounce) {
+              // Bounce pad launches player upward
+              player.vy = JUMP_VEL * 1.4;
+            } else {
+              player.vy = 0;
+              player.onGround = true;
+              player.jumpCount = 0;
+            }
+          } else {
+            // Moving up – hit ceiling of platform
+            player.y = plat.y + plat.h;
+            player.vy = 0;
+          }
+        }
+      }
+
+      // ── Trail ────────────────────────────────────────────────────────────────
+      player.trail.push({ x: player.x + player.w / 2, y: player.y + player.h / 2 });
+      if (player.trail.length > 18) player.trail.shift();
+
+      // ── Goal collision ────────────────────────────────────────────────────────
+      const goal = level.goal;
+      if (rectOverlap(player.x, player.y, player.w, player.h, goal.x, goal.y, 30, 50)) {
+        elapsedTime = (Date.now() - startTime) / 1000;
+        bestTimes[currentLevel] = (bestTimes[currentLevel] === undefined)
+          ? elapsedTime
+          : Math.min(bestTimes[currentLevel], elapsedTime);
+        spawnParticles(goal.x + 15, goal.y + 25, '#ffd700', 30);
+        if (currentLevel < LEVELS.length - 1) {
+          state = 'nextLevel';
+          showOverlay(
+            '🎉 Ziel erreicht!',
+            `Zeit: ${elapsedTime.toFixed(1)}s — Weiter zum nächsten Level!`,
+            'Nächstes Level'
+          );
+        } else {
+          state = 'win';
+          showOverlay(
+            '🏆 Gewonnen!',
+            `Du hast alle Level geschafft!\nZeit: ${elapsedTime.toFixed(1)}s`,
+            'Nochmal spielen'
+          );
+        }
+      }
+
+      // ── Fall out of screen → death ────────────────────────────────────────────
+      if (player.y > H + 100) {
+        spawnParticles(player.x + player.w / 2, H, '#e94560', 15);
+        state = 'dead';
+        showOverlay('💀 Du bist gefallen!', 'Versuch es nochmal.', 'Neu starten');
+      }
+
+      // ── Particles ────────────────────────────────────────────────────────────
+      particles = particles.filter(p => p.life > 0);
+      for (const p of particles) {
+        p.x    += p.vx;
+        p.y    += p.vy;
+        p.vy   += 0.1;
+        p.life -= p.decay;
+      }
+
+      // ── Timer ────────────────────────────────────────────────────────────────
+      if (state === 'playing') {
+        elapsedTime = (Date.now() - startTime) / 1000;
+        timerDisplay.textContent = `Zeit: ${elapsedTime.toFixed(1)}s`;
+      }
+    }
+
+    // ─── Draw ─────────────────────────────────────────────────────────────────────
+    function draw() {
+      const level = LEVELS[currentLevel];
+
+      // Background gradient
+      const grad = ctx.createLinearGradient(0, 0, 0, H);
+      grad.addColorStop(0, level.bg[0]);
+      grad.addColorStop(1, level.bg[1]);
+      ctx.fillStyle = grad;
+      ctx.fillRect(0, 0, W, H);
+
+      drawStars();
+
+      // Platforms
+      for (const plat of level.platforms) {
+        if (plat.isGoal) {
+          ctx.fillStyle   = '#ffd700';
+          ctx.shadowColor = '#ffd700';
+          ctx.shadowBlur  = 12;
+        } else if (plat.bounce) {
+          ctx.fillStyle   = '#7cfc00';
+          ctx.shadowColor = '#7cfc00';
+          ctx.shadowBlur  = 10;
+        } else {
+          ctx.fillStyle   = '#4a90d9';
+          ctx.shadowColor = '#4a90d9';
+          ctx.shadowBlur  = 6;
+        }
+        ctx.fillRect(plat.x, plat.y, plat.w, plat.h);
+        ctx.fillStyle = 'rgba(255,255,255,0.25)';
+        ctx.fillRect(plat.x, plat.y, plat.w, 3);
+        ctx.shadowBlur = 0;
+      }
+
+      // Goal flag
+      drawFlag(level.goal.x, level.goal.y);
+
+      // Spawn label (first 1.5 s)
+      if (elapsedTime < 1.5 && state === 'playing') {
+        ctx.save();
+        ctx.globalAlpha = 1 - elapsedTime / 1.5;
+        ctx.fillStyle   = '#fff';
+        ctx.font        = 'bold 14px sans-serif';
+        ctx.fillText('START', level.spawnX, level.spawnY - player.h - 6);
+        ctx.restore();
+      }
+
+      // Trail
+      for (let i = 0; i < player.trail.length; i++) {
+        const t     = player.trail[i];
+        const alpha = (i / player.trail.length) * 0.4;
+        const size  = (i / player.trail.length) * player.w * 0.7;
+        ctx.globalAlpha = alpha;
+        ctx.fillStyle   = player.color;
+        ctx.fillRect(t.x - size / 2, t.y - size / 2, size, size);
+      }
+      ctx.globalAlpha = 1;
+
+      // Player square
+      ctx.save();
+      ctx.shadowColor = player.color;
+      ctx.shadowBlur  = 18;
+      ctx.fillStyle   = player.color;
+      ctx.fillRect(player.x, player.y, player.w, player.h);
+      // Eyes
+      const eyeY = player.y + 8;
+      ctx.fillStyle = '#fff';
+      ctx.fillRect(player.x + 6,  eyeY, 6, 6);
+      ctx.fillRect(player.x + 18, eyeY, 6, 6);
+      ctx.fillStyle   = '#1a1a2e';
+      const pupilOffX = player.vx > 0 ? 2 : (player.vx < 0 ? 0 : 1);
+      ctx.fillRect(player.x + 7  + pupilOffX, eyeY + 1, 3, 3);
+      ctx.fillRect(player.x + 19 + pupilOffX, eyeY + 1, 3, 3);
+      ctx.restore();
+
+      // Particles
+      for (const p of particles) {
+        ctx.globalAlpha = Math.max(0, p.life);
+        ctx.fillStyle   = p.color;
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, p.size * p.life, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.globalAlpha = 1;
+    }
+
+    // ─── Stars ────────────────────────────────────────────────────────────────────
+    const starCache = [];
+    (function buildStars() {
+      for (let i = 0; i < 80; i++) {
+        starCache.push({
+          x: Math.random() * W,
+          y: Math.random() * H,
+          r: 0.5 + Math.random() * 1.5,
+          a: 0.2 + Math.random() * 0.6
+        });
+      }
+    })();
+
+    function drawStars() {
+      ctx.save();
+      for (const s of starCache) {
+        ctx.globalAlpha = s.a;
+        ctx.fillStyle   = '#fff';
+        ctx.beginPath();
+        ctx.arc(s.x, s.y, s.r, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.restore();
+    }
+
+    // ─── Flag ─────────────────────────────────────────────────────────────────────
+    function drawFlag(x, y) {
+      const now = Date.now() / 600;
+      ctx.strokeStyle = '#ccc';
+      ctx.lineWidth   = 3;
+      ctx.beginPath();
+      ctx.moveTo(x + 3, y + 50);
+      ctx.lineTo(x + 3, y);
+      ctx.stroke();
+      ctx.fillStyle   = '#ffd700';
+      ctx.shadowColor = '#ffd700';
+      ctx.shadowBlur  = 14;
+      ctx.beginPath();
+      ctx.moveTo(x + 3, y);
+      ctx.lineTo(x + 3 + 22, y + 5  + Math.sin(now) * 4);
+      ctx.lineTo(x + 3 + 22, y + 16 + Math.sin(now + 0.5) * 4);
+      ctx.lineTo(x + 3, y + 20);
+      ctx.closePath();
+      ctx.fill();
+      ctx.shadowBlur = 0;
+    }
+
+    // ─── Overlay helper ───────────────────────────────────────────────────────────
+    function showOverlay(title, text, btnLabel) {
+      overlayTitle.textContent = title;
+      overlayText.textContent  = text;
+      startBtn.textContent     = btnLabel;
+      overlay.style.display    = 'flex';
+    }
+
+    // ─── Start / restart ──────────────────────────────────────────────────────────
+    function startGame(levelIndex) {
+      currentLevel = levelIndex;
+      particles    = [];
+      state        = 'playing';
+      startTime    = Date.now();
+      elapsedTime  = 0;
+      player.reset(LEVELS[currentLevel]);
+      levelDisplay.textContent = `Level ${currentLevel + 1} / ${LEVELS.length}`;
+      timerDisplay.textContent = 'Zeit: 0.0s';
+      overlay.style.display    = 'none';
+    }
+
+    startBtn.addEventListener('click', () => {
+      if (state === 'nextLevel') {
+        startGame(currentLevel + 1);
+      } else if (state === 'win') {
+        startGame(0);
+      } else {
+        startGame(state === 'dead' ? currentLevel : 0);
+      }
+    });
+
+    // ─── Game loop ────────────────────────────────────────────────────────────────
+    function loop() {
+      update();
+      draw();
+      requestAnimationFrame(loop);
+    }
+    requestAnimationFrame(loop);
+  </script>
+</body>
+</html>
