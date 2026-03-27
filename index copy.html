@@ -1,0 +1,222 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<title>Geometry Cube Dash - Auto Run</title>
+<style>
+body{margin:0;background:#111;display:flex;justify-content:center;align-items:center;height:100vh;overflow:hidden;}
+canvas{border:3px solid #222;box-shadow:0 0 30px rgba(0,255,255,0.4);}
+#overlay{position:absolute;inset:0;display:flex;flex-direction:column;justify-content:center;align-items:center;background:rgba(0,0,0,0.85);color:white;gap:15px;text-align:center;}
+button{padding:10px 25px;font-size:18px;background:#ff5c5c;border:none;color:white;border-radius:5px;cursor:pointer;}
+#score{position:absolute;top:10px;left:10px;color:white;font-size:18px;}
+</style>
+</head>
+<body>
+<div id="score">Distanz: 0</div>
+<canvas id="game"></canvas>
+<div id="overlay">
+<h1>🟦 Geometry Cube Dash</h1>
+<button id="start">Start</button>
+<div id="highscoreDisplay">Highscore: 0</div>
+</div>
+<script>
+const canvas=document.getElementById("game");
+const ctx=canvas.getContext("2d");
+canvas.width=900; canvas.height=500;
+const W=canvas.width,H=canvas.height;
+
+const GRAVITY=0.6,JUMP=-12,LAVA=70;
+const speed=4;
+const keys={};
+document.addEventListener("keydown",e=>keys[e.code]=true);
+document.addEventListener("keyup",e=>keys[e.code]=false);
+
+const overlay=document.getElementById("overlay");
+const startBtn=document.getElementById("start");
+const scoreUI=document.getElementById("score");
+const highscoreDisplay=document.getElementById("highscoreDisplay");
+
+let state="menu",cameraX=0,distance=0,highscore=0;
+
+/* PLAYER */
+const player={x:0,y:0,vy:0,w:30,h:30,onGround:false,rot:0};
+
+/* WORLD */
+let platforms=[],spikes=[],pads=[];
+
+/* START GAME */
+function startGame(){
+    state="play";
+    overlay.style.display="none";
+    platforms=[]; spikes=[]; pads=[];
+    distance=0;
+
+    // Startplattform gerade/spike-frei
+    generatePlatforms(0,5,true);
+
+    // Spieler auf der ersten Plattform spawnen
+    const firstPlatform = platforms[0];
+    player.x = 100;
+    player.y = firstPlatform.y - player.h;
+    player.vy = 0;
+}
+
+/* GENERATE PLATFORMS */
+function generatePlatforms(startX,count,isStart=false){
+    let x=startX;
+    for(let i=0;i<count;i++){
+        let w=isStart?250:60+Math.random()*120;
+        let h=20;
+        let y=isStart?H-LAVA-50:H-LAVA-50-Math.random()*80; // max 80px Höhenunterschied
+        platforms.push({x:x,y:y,w:w,h:h});
+
+        if(!isStart){
+            // Spikes mit max 40px Breite
+            if(Math.random()<0.25){
+                const spikeW = Math.min(40, w-20);
+                const spikeX = x + 10 + Math.random()*(w-20-spikeW);
+                spikes.push({x:spikeX, y:y-6, w:spikeW, h:6});
+            }
+            // Jump Pads
+            if(Math.random()<0.15) pads.push({x:x+20,y:y-10,w:w-40,h:10});
+        }
+
+        let gap = Math.random()*100 + 50; // 50-150px Abstand
+        x+=w+gap;
+        isStart=false;
+    }
+}
+
+/* COLLISION */
+function rect(a,b){return a.x<b.x+b.w && a.x+a.w>b.x && a.y<b.y+b.h && a.y+a.h>b.y}
+
+/* UPDATE */
+function update(){
+    if(state!=="play")return;
+
+    // Würfel bewegt sich automatisch
+    player.x += speed;
+    distance += speed;
+
+    // Jump
+    if((keys["Space"]||keys["ArrowUp"]) && player.onGround){
+        player.vy=JUMP; player.onGround=false;
+    }
+
+    // Gravity
+    player.vy+=GRAVITY;
+    player.y+=player.vy;
+    player.onGround=false;
+
+    // Plattform-Hitbox
+    for(const p of platforms){
+        if(rect(player,p)){
+            if(player.vy>0 && player.y+player.h-player.vy<=p.y){
+                player.y=p.y-player.h;
+                player.vy=0;
+                player.onGround=true;
+            }
+        }
+    }
+
+    // Spikes
+    for(const s of spikes){if(rect(player,s)) die();}
+
+    // Jump pads
+    for(const p of pads){if(rect(player,p))player.vy=JUMP*1.3;}
+
+    // Lava
+    if(player.y+player.h>H-LAVA) die();
+
+    // Rotate cube
+    if(!player.onGround) player.rot+=0.15; else player.rot=0;
+
+    // Kamera folgt Spieler
+    cameraX = player.x - 200;
+
+    // Neue Plattformen generieren
+    let last=platforms[platforms.length-1];
+    if(last.x-cameraX<1200) generatePlatforms(last.x+last.w,3);
+
+    // Alte Elemente entfernen
+    platforms = platforms.filter(c=>c.x+c.w>cameraX-200);
+    spikes = spikes.filter(s=>s.x+s.w>cameraX-200);
+    pads = pads.filter(p=>p.x+p.w>cameraX-200);
+
+    // Score
+    scoreUI.textContent="Distanz: "+Math.floor(distance);
+    if(distance>highscore) highscore=Math.floor(distance);
+    highscoreDisplay.textContent="Highscore: "+highscore;
+}
+
+/* DIE */
+function die(){
+    state="dead";
+    overlay.style.display="flex";
+    overlay.innerHTML=
+    `<h1>💀 Game Over</h1>
+    <p>Distanz: ${Math.floor(distance)}</p>
+    <button id="start">Nochmal</button>
+    <div id="highscoreDisplay">Highscore: ${highscore}</div>`;
+    document.getElementById("start").onclick=startGame;
+}
+
+/* DRAW */
+function draw(){
+    ctx.fillStyle="#111"; ctx.fillRect(0,0,W,H);
+
+    ctx.save(); ctx.translate(-cameraX,0);
+    // Plattformen
+    for(const c of platforms){
+        let grad=ctx.createLinearGradient(c.x,c.y,c.x+c.w,c.y+c.h);
+        grad.addColorStop(0,"#0ff"); grad.addColorStop(1,"#00f");
+        ctx.fillStyle=grad;
+        ctx.fillRect(c.x,c.y,c.w,c.h);
+    }
+
+    // Spikes
+    for(const s of spikes){
+        ctx.fillStyle="#f00";
+        ctx.beginPath();
+        ctx.moveTo(s.x,s.y+s.h);
+        ctx.lineTo(s.x+s.w/2,s.y);
+        ctx.lineTo(s.x+s.w,s.y+s.h);
+        ctx.fill();
+    }
+
+    // Jump Pads
+    for(const p of pads){ctx.fillStyle="#0f0"; ctx.fillRect(p.x,p.y,p.w,p.h);}
+    ctx.restore();
+
+    // Player
+    ctx.save(); ctx.translate(200,player.y+player.h/2); ctx.rotate(player.rot);
+    ctx.fillStyle="#ff0"; ctx.shadowColor="#ff0"; ctx.shadowBlur=12;
+    ctx.fillRect(-player.w/2,-player.h/2,player.w,player.h);
+    ctx.restore();
+
+    // Lava
+    drawLava();
+}
+
+/* FLUID LAVA */
+function drawLava(){
+    let t=Date.now()*0.003;
+    ctx.beginPath(); ctx.moveTo(0,H);
+    for(let x=0;x<=W;x+=10){
+        let y=H-LAVA+Math.sin(x*0.03+t)*8;
+        ctx.lineTo(x,y);
+    }
+    ctx.lineTo(W,H); ctx.closePath();
+    let grad=ctx.createLinearGradient(0,H-LAVA,0,H);
+    grad.addColorStop(0,"#ff7a00"); grad.addColorStop(1,"#ff2a00");
+    ctx.fillStyle=grad; ctx.fill();
+}
+
+/* LOOP */
+function loop(){update(); draw(); requestAnimationFrame(loop);}
+loop();
+
+startBtn.onclick=startGame;
+</script>
+</body>
+</html>

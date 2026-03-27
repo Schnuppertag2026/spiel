@@ -1,0 +1,596 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<title>3D Wild Arena - Optimiert & Stabil</title>
+<style>
+body{margin:0;overflow:hidden;}
+canvas{display:block;}
+#ui{position:absolute;top:10px;left:10px;color:white;font-family:sans-serif;z-index:10;}
+#ui button{background:rgba(0,150,255,0.8);border:none;color:white;padding:8px 16px;margin:2px;border-radius:4px;cursor:pointer;}
+#ui button:hover{background:rgba(0,120,200,0.9);}
+#perspective-toggle{position:absolute;top:10px;right:10px;}
+#crosshair{position:absolute;top:50%;left:50%;width:20px;height:20px;transform:translate(-50%,-50%);color:white;font-size:24px;pointer-events:none;z-index:20;}
+</style>
+</head>
+<body>
+<div id="ui">
+    <div>Gefangene Tiere: <span id="caught">0</span></div>
+    <button id="netBtn">Netz werfen (K)</button>
+    <div id="perspective-toggle">
+        <button id="togglePerspective">1st Person</button>
+    </div>
+</div>
+<div id="crosshair">+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/three@0.152.2/build/three.min.js"></script>
+
+<script>
+// === KONFIGURATION ===
+const CONFIG = {
+    playerSpeed: 1.0,
+    animalSpeed: 0.2,
+    treeScale: 1.6,
+    playerScale: 1.4,
+    waterSpeed: 0.025,
+    gravity: 0.6,
+    worldSize: 2500,
+    segments: 500
+};
+
+// === PERSPEKTIVE ===
+let isFirstPerson = true;
+let pointerLocked = false;
+let yaw = 0, pitch = 0;
+let mouseSensitivity = 0.002;
+const togglePerspectiveBtn = document.getElementById('togglePerspective');
+const crosshair = document.getElementById('crosshair');
+
+togglePerspectiveBtn.addEventListener('click', () => {
+    isFirstPerson = !isFirstPerson;
+    togglePerspectiveBtn.textContent = isFirstPerson ? '3rd Person' : '1st Person';
+    crosshair.style.opacity = isFirstPerson ? '1' : '0';
+});
+
+// Pointer Lock
+document.addEventListener('click', () => {
+    if(isFirstPerson && !pointerLocked) {
+        document.body.requestPointerLock();
+    }
+});
+document.addEventListener('pointerlockchange', () => {
+    pointerLocked = document.pointerLockElement === document.body;
+});
+
+// === SZENE ===
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x87ceeb);
+const camera = new THREE.PerspectiveCamera(75, window.innerWidth/window.innerHeight, 0.1, 8000);
+const renderer = new THREE.WebGLRenderer({antialias:true});
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+document.body.appendChild(renderer.domElement);
+
+// === LICHT ===
+const sunLight = new THREE.DirectionalLight(0xfff2cc, 1.2);
+sunLight.position.set(150,300,-80);
+sunLight.castShadow = true;
+sunLight.shadow.mapSize.width = 2048;
+sunLight.shadow.mapSize.height = 2048;
+scene.add(sunLight);
+scene.add(new THREE.AmbientLight(0xffffff, 0.6));
+
+// === TERRAIN ===
+const terrainGeo = new THREE.PlaneGeometry(CONFIG.worldSize, CONFIG.worldSize, CONFIG.segments, CONFIG.segments);
+
+function organicHeight(x,y){
+    const s1 = 0.002, s2 = 0.006, s3 = 0.0012;
+    const bigHills  = Math.sin(x*s1)*50 + Math.cos(y*s1*1.2)*40;
+    const detail    = Math.sin((x+y)*s2)*12 + Math.cos((x-y)*s2*1.4)*8;
+    const longWaves = Math.sin(x*s3)*30 * Math.cos(y*s3*0.7);
+    const distToCenter = Math.sqrt(x*x + y*y);
+    const basin = -Math.max(0, 60 - distToCenter*0.04);
+    return bigHills + detail + longWaves + basin;
+}
+
+for(let i=0;i<terrainGeo.attributes.position.count;i++){
+    const x = terrainGeo.attributes.position.getX(i);
+    const y = terrainGeo.attributes.position.getY(i);
+    terrainGeo.attributes.position.setZ(i, organicHeight(x,y));
+}
+terrainGeo.computeVertexNormals();
+
+const terrainMat = new THREE.MeshStandardMaterial({
+    color: 0x228B22,
+    roughness: 0.85,
+    metalness: 0.02
+});
+const terrain = new THREE.Mesh(terrainGeo, terrainMat);
+terrain.rotation.x = -Math.PI/2;
+terrain.receiveShadow = true;
+scene.add(terrain);
+
+// === OPTIMIERTE BLAUES WELLEN-WASSER ===
+const waterLevel = -10;
+const waterGeo = new THREE.PlaneGeometry(1000, 1000, 50, 50); // Kleiner + weniger Segmente
+const waterMat = new THREE.MeshStandardMaterial({
+    color: 0x006994,
+    transparent: true,
+    opacity: 0.85,
+    roughness: 0.1,
+    metalness: 0.3
+});
+const water = new THREE.Mesh(waterGeo, waterMat);
+water.rotation.x = -Math.PI/2;
+water.position.y = waterLevel;
+scene.add(water);
+
+let waterTime = 0;
+
+// === HILFSFUNKTIONEN ===
+function getTerrainHeight(x,z){
+    const px = ((x+CONFIG.worldSize/2)/CONFIG.worldSize)*CONFIG.segments;
+    const pz = ((z+CONFIG.worldSize/2)/CONFIG.worldSize)*CONFIG.segments;
+    const ix = Math.floor(px);
+    const iz = Math.floor(pz);
+    const idx = iz*(CONFIG.segments+1)+ix;
+    if(idx<0 || idx>=terrainGeo.attributes.position.count) return 0;
+    return terrainGeo.attributes.position.getZ(idx);
+}
+function isLand(x,z){ return getTerrainHeight(x,z) >= waterLevel + 1; }
+
+// === SIMPLES NETZ (KEINE PARTIKEL-PHYSIK MEHR) ===
+let net = null;
+const netBtn = document.getElementById('netBtn');
+let keys = {};
+
+function createNet(){
+    if(net) return;
+    
+    // Einfaches Netz-Mesh
+    const netGeometry = new THREE.PlaneGeometry(10, 10, 8, 8);
+    const netMaterial = new THREE.MeshStandardMaterial({
+        color: 0x88cc88,
+        transparent: true,
+        opacity: 0.7,
+        wireframe: true
+    });
+    
+    net = {
+        mesh: new THREE.Mesh(netGeometry, netMaterial),
+        vy: 10,
+        life: 3000,
+        spawnTime: Date.now(),
+        caughtAnimals: []
+    };
+    
+    // Startposition vor Spieler
+    net.mesh.position.copy(player.mesh.position);
+    net.mesh.position.y += 2.5;
+    const forward = new THREE.Vector3(0,0,-1).applyQuaternion(camera.quaternion);
+    forward.y = 0;
+    forward.normalize();
+    net.mesh.position.add(forward.multiplyScalar(12));
+    net.mesh.rotation.x = -Math.PI/2;
+    
+    net.mesh.castShadow = true;
+    scene.add(net.mesh);
+}
+
+function updateNet(deltaTime){
+    if(!net) return;
+    
+    // Lebensdauer
+    net.life -= deltaTime;
+    if(net.life <= 0){
+        scene.remove(net.mesh);
+        net = null;
+        return;
+    }
+    
+    // Einfache Physik
+    net.vy -= CONFIG.gravity * 1.5;
+    net.mesh.position.y += net.vy * 0.016;
+    
+    // Boden-Kollision
+    if(net.mesh.position.y < waterLevel + 2){
+        net.mesh.position.y = waterLevel + 2;
+        net.vy *= -0.4;
+    }
+    
+    // Netz-Wackeln
+    const time = (Date.now() - net.spawnTime) * 0.005;
+    net.mesh.rotation.z = Math.sin(time * 4) * 0.15;
+    net.mesh.rotation.x = Math.sin(time * 3) * 0.1;
+    
+    // Tier-Fang
+    for(let i = animals.length - 1; i >= 0; i--){
+        const animal = animals[i];
+        if(net.mesh.position.distanceTo(animal.position) < 5){
+            scene.remove(animal);
+            animals.splice(i, 1);
+            animalStates.splice(i, 1);
+            net.caughtAnimals.push(animal);
+            break;
+        }
+    }
+}
+
+netBtn.addEventListener('click', createNet);
+document.addEventListener('keydown', e => {
+    keys[e.code] = true;
+    if(e.code === 'KeyK') createNet();
+});
+document.addEventListener('keyup', e => keys[e.code] = false);
+
+// === GRÖSSERER SPIELER ===
+const player = {mesh:null, speed:CONFIG.playerSpeed, vy:0, onGround:false, jumpPower:12, isMoving:false, animTime:0, x:0, y:40, z:0};
+let playerParts = [];
+
+function createPlayerModel(){
+    const group = new THREE.Group();
+    group.scale.set(CONFIG.playerScale, CONFIG.playerScale, CONFIG.playerScale);
+    group.visible = false;
+
+    const bodyGeo = new THREE.BoxGeometry(0.8,1.8,0.5);
+    const bodyMat = new THREE.MeshStandardMaterial({color:0x3366ff});
+    const body = new THREE.Mesh(bodyGeo, bodyMat);
+    body.position.y = 1.8;
+    body.castShadow = true;
+    group.add(body);
+    playerParts.push({mesh:body, type:'body'});
+
+    const headGeo = new THREE.BoxGeometry(0.45,0.45,0.45);
+    const headMat = new THREE.MeshStandardMaterial({color:0xffdbac});
+    const head = new THREE.Mesh(headGeo, headMat);
+    head.position.y = 2.6;
+    head.castShadow = true;
+    group.add(head);
+    playerParts.push({mesh:head, type:'head'});
+
+    const armGeo = new THREE.BoxGeometry(0.2,0.9,0.25);
+    const armMat = new THREE.MeshStandardMaterial({color:0x3366ff});
+    const leftArm = new THREE.Mesh(armGeo, armMat);
+    leftArm.position.set(-0.55,1.65,0);
+    leftArm.castShadow = true;
+    const rightArm = new THREE.Mesh(armGeo, armMat);
+    rightArm.position.set(0.55,1.65,0);
+    rightArm.castShadow = true;
+    group.add(leftArm);
+    group.add(rightArm);
+    playerParts.push({mesh:leftArm, type:'arm'});
+    playerParts.push({mesh:rightArm, type:'arm'});
+
+    const legGeo = new THREE.BoxGeometry(0.25,1.2,0.3);
+    const legMat = new THREE.MeshStandardMaterial({color:0x222222});
+    const leftLeg = new THREE.Mesh(legGeo, legMat);
+    leftLeg.position.set(-0.2,0.6,0);
+    leftLeg.castShadow = true;
+    const rightLeg = new THREE.Mesh(legGeo, legMat);
+    rightLeg.position.set(0.2,0.6,0);
+    rightLeg.castShadow = true;
+    group.add(leftLeg);
+    group.add(rightLeg);
+    playerParts.push({mesh:leftLeg, type:'leg'});
+    playerParts.push({mesh:rightLeg, type:'leg'});
+
+    return group;
+}
+
+player.mesh = createPlayerModel();
+player.mesh.position.set(0,40,0);
+scene.add(player.mesh);
+
+function updatePlayerAnimation(deltaTime){
+    player.animTime += deltaTime * 0.005;
+    playerParts.forEach((part, index) => {
+        if(part.type === 'leg'){
+            const legIndex = playerParts.indexOf(part);
+            const swing = Math.sin(player.animTime * 10 + legIndex) * 0.4;
+            part.mesh.rotation.z = swing * (player.isMoving ? 1 : 0.2);
+            part.mesh.rotation.x = Math.abs(swing) * 0.25 * (player.isMoving ? 1 : 0.2);
+        }
+        else if(part.type === 'arm'){
+            const armIndex = playerParts.indexOf(part);
+            const swing = Math.sin(player.animTime * 10 + (armIndex % 2)) * 0.35;
+            part.mesh.rotation.z = -swing * (player.isMoving ? 1 : 0.2);
+        }
+    });
+}
+
+function createLandAnimal(){
+    const animal = new THREE.Group();
+    const bodyGeo = new THREE.BoxGeometry(1.4,0.7,2.4);
+    const bodyMat = new THREE.MeshStandardMaterial({color: new THREE.Color().setHSL(Math.random()*0.1 + 0.05, 0.7, 0.4)});
+    const body = new THREE.Mesh(bodyGeo, bodyMat);
+    body.position.y = 0.7;
+    body.castShadow = true;
+    animal.add(body);
+
+    const headGeo = new THREE.BoxGeometry(0.7,0.6,0.7);
+    const head = new THREE.Mesh(headGeo, bodyMat);
+    head.position.set(0,0.9,1.3);
+    head.castShadow = true;
+    animal.add(head);
+
+    const legGeo = new THREE.BoxGeometry(0.25,0.6,0.25);
+    const legMat = new THREE.MeshStandardMaterial({color:0x4b2e15});
+    const legPositions = [
+        [-0.45,0.3,0.7], [0.45,0.3,0.7],
+        [-0.45,0.3,-0.8], [0.45,0.3,-0.8]
+    ];
+    legPositions.forEach(p=>{
+        const leg = new THREE.Mesh(legGeo, legMat);
+        leg.position.set(p[0],p[1],p[2]);
+        leg.castShadow = true;
+        animal.add(leg);
+    });
+    return animal;
+}
+
+function createWaterAnimal(){
+    const fish = new THREE.Group();
+    const bodyGeo = new THREE.CylinderGeometry(0.3, 0.4, 1.2, 8);
+    const bodyMat = new THREE.MeshStandardMaterial({color: new THREE.Color().setHSL(Math.random()*0.3 + 0.5, 0.8, 0.5)});
+    const body = new THREE.Mesh(bodyGeo, bodyMat);
+    body.rotation.z = Math.PI/2;
+    fish.add(body);
+
+    const tailGeo = new THREE.ConeGeometry(0.35, 0.8, 6);
+    const tail = new THREE.Mesh(tailGeo, bodyMat);
+    tail.position.set(0.8, 0, 0);
+    tail.rotation.z = Math.PI/2;
+    fish.add(tail);
+
+    return fish;
+}
+
+const animals = [];
+const waterAnimals = [];
+const animalStates = [];
+const waterAnimalStates = [];
+const caughtUI = document.getElementById("caught");
+const TOTAL_ANIMALS = 100;
+
+// Landtiere
+for(let i=0;i<70;i++){
+    const mesh = createLandAnimal();
+    let x,z,y;
+    do{
+        x = (Math.random()-0.5)*CONFIG.worldSize*0.7;
+        z = (Math.random()-0.5)*CONFIG.worldSize*0.7;
+        y = getTerrainHeight(x,z)+0.8;
+    }while(!isLand(x,z));
+    
+    mesh.position.set(x,y,z);
+    const dirAngle = Math.random()*Math.PI*2;
+    mesh.rotation.y = dirAngle;
+    animals.push(mesh);
+    scene.add(mesh);
+    
+    const dir = new THREE.Vector3(Math.sin(dirAngle),0,Math.cos(dirAngle));
+    animalStates.push({
+        dir, speed: CONFIG.animalSpeed * (0.8 + Math.random()*0.4),
+        changeTime: Date.now() + 2000 + Math.random()*4000
+    });
+}
+
+// Wassertiere
+for(let i=0;i<30;i++){
+    const mesh = createWaterAnimal();
+    let x,z;
+    do{
+        x = (Math.random()-0.5)*CONFIG.worldSize*0.8;
+        z = (Math.random()-0.5)*CONFIG.worldSize*0.8;
+    }while(isLand(x,z));
+    
+    mesh.position.set(x, waterLevel + 0.5, z);
+    const dirAngle = Math.random()*Math.PI*2;
+    mesh.rotation.y = dirAngle;
+    waterAnimals.push(mesh);
+    scene.add(mesh);
+    
+    const dir = new THREE.Vector3(Math.sin(dirAngle),0,Math.cos(dirAngle));
+    waterAnimalStates.push({
+        dir, speed: CONFIG.animalSpeed * 0.6,
+        changeTime: Date.now() + 1000 + Math.random()*3000,
+        depth: 0.3 + Math.random()*0.4
+    });
+}
+
+// === BÄUME ===
+function spawnVegetation(){
+    for(let i=0;i<400;i++){
+        const height = (8 + Math.random()*5) * CONFIG.treeScale;
+        const crownRadius = (2 + Math.random()*1.2) * CONFIG.treeScale;
+        const trunkHeight = height * 0.35;
+        
+        const trunkGeo = new THREE.CylinderGeometry(0.4*CONFIG.treeScale,0.6*CONFIG.treeScale,trunkHeight,8);
+        const trunkMat = new THREE.MeshStandardMaterial({color:0x5b3a1a});
+        const trunk = new THREE.Mesh(trunkGeo,trunkMat);
+        trunk.castShadow = true;
+
+        const crownGeo = new THREE.ConeGeometry(crownRadius,height*0.65,10);
+        const crownMat = new THREE.MeshStandardMaterial({color:0x0b6623});
+        const crown = new THREE.Mesh(crownGeo,crownMat);
+        crown.position.y = trunkHeight/2 + height*0.325;
+        crown.castShadow = true;
+
+        const tree = new THREE.Group();
+        tree.add(trunk);
+        tree.add(crown);
+
+        let x,z,y;
+        do{
+            x = (Math.random()-0.5)*CONFIG.worldSize*0.9;
+            z = (Math.random()-0.5)*CONFIG.worldSize*0.9;
+            y = getTerrainHeight(x,z);
+        }while(!isLand(x,z));
+
+        tree.position.set(x, y, z);
+        scene.add(tree);
+    }
+}
+spawnVegetation();
+
+document.addEventListener('mousemove', (e) => {
+    if(!isFirstPerson || !pointerLocked) return;
+    yaw -= e.movementX * mouseSensitivity;
+    pitch -= e.movementY * mouseSensitivity;
+    pitch = Math.max(-Math.PI/2, Math.min(Math.PI/2, pitch));
+});
+
+function updateCamera() {
+    player.x = player.mesh.position.x;
+    player.y = player.mesh.position.y;
+    player.z = player.mesh.position.z;
+    
+    if(isFirstPerson) {
+        camera.position.set(player.x, player.y + 2.2, player.z);
+        camera.rotation.order = 'YXZ';
+        camera.rotation.y = yaw;
+        camera.rotation.x = pitch;
+    } else {
+        const radius = 20;
+        const camX = player.x + radius * Math.sin(yaw + Math.PI) * Math.cos(pitch);
+        const camY = player.y + radius * Math.sin(pitch) + 8;
+        const camZ = player.z + radius * Math.cos(yaw + Math.PI) * Math.cos(pitch);
+        camera.position.set(camX, camY, camZ);
+        camera.lookAt(player.x, player.y + 2, player.z);
+    }
+
+    const forward = new THREE.Vector3(0,0,-1);
+    forward.applyQuaternion(camera.quaternion);
+    forward.y = 0;
+    forward.normalize();
+    
+    const right = new THREE.Vector3();
+    right.crossVectors(forward, new THREE.Vector3(0,1,0)).normalize();
+
+    let moveDir = new THREE.Vector3();
+    if(keys["KeyW"]) moveDir.add(forward);
+    if(keys["KeyS"]) moveDir.add(forward.clone().negate());
+    if(keys["KeyA"]) moveDir.add(right.clone().negate());
+    if(keys["KeyD"]) moveDir.add(right);
+
+    player.isMoving = moveDir.lengthSq() > 0;
+    
+    if(moveDir.lengthSq() > 0){
+        moveDir.normalize().multiplyScalar(player.speed);
+        player.mesh.position.add(moveDir);
+        player.x += moveDir.x;
+        player.z += moveDir.z;
+    }
+}
+
+function updateAnimals(deltaTime){
+    const now = Date.now();
+    
+    for(let i=0;i<animals.length;i++){
+        const a = animals[i];
+        const state = animalStates[i];
+        if(now > state.changeTime){
+            const angleChange = (Math.random()-0.5) * Math.PI/2;
+            const currentAngle = Math.atan2(state.dir.x, state.dir.z);
+            const newAngle = currentAngle + angleChange;
+            state.dir.set(Math.sin(newAngle),0,Math.cos(newAngle));
+            state.speed = CONFIG.animalSpeed * (0.8 + Math.random()*0.4);
+            state.changeTime = now + 1500 + Math.random()*4000;
+        }
+        const move = state.dir.clone().multiplyScalar(state.speed * deltaTime*0.06);
+        a.position.add(move);
+        const border = CONFIG.worldSize*0.45;
+        if(Math.abs(a.position.x) > border || Math.abs(a.position.z) > border || !isLand(a.position.x,a.position.z)){
+            state.dir.multiplyScalar(-1);
+        }
+        const terrainY = getTerrainHeight(a.position.x,a.position.z)+0.8;
+        a.position.y = terrainY + Math.sin(now*0.003 + i)*0.1;
+        const angle = Math.atan2(state.dir.x, state.dir.z);
+        a.rotation.y = angle;
+    }
+    
+    for(let i=0;i<waterAnimals.length;i++){
+        const fish = waterAnimals[i];
+        const state = waterAnimalStates[i];
+        if(now > state.changeTime){
+            const angleChange = (Math.random()-0.5) * Math.PI;
+            const currentAngle = Math.atan2(state.dir.x, state.dir.z);
+            const newAngle = currentAngle + angleChange;
+            state.dir.set(Math.sin(newAngle),0,Math.cos(newAngle));
+            state.speed = CONFIG.animalSpeed * 0.5;
+            state.changeTime = now + 1000 + Math.random()*3000;
+        }
+        const move = state.dir.clone().multiplyScalar(state.speed * deltaTime*0.06);
+        fish.position.add(move);
+        
+        const border = CONFIG.worldSize*0.4;
+        if(Math.abs(fish.position.x) > border || Math.abs(fish.position.z) > border){
+            state.dir.multiplyScalar(-1);
+        }
+        
+        const waveTime = now * 0.002 + i;
+        fish.position.y = waterLevel + 0.5 + Math.sin(waveTime) * state.depth;
+        fish.rotation.y = Math.atan2(state.dir.x, state.dir.z);
+        fish.rotation.z = Math.sin(waveTime * 2) * 0.2;
+    }
+}
+
+// === HAUPTSCHLEIFE ===
+let lastTime = performance.now();
+function loop(){
+    const currentTime = performance.now();
+    const deltaTime = Math.min(currentTime - lastTime, 16.67); // Max 60fps
+    lastTime = currentTime;
+
+    // Spielerphysik
+    if(keys["Space"] && player.onGround){
+        player.vy = player.jumpPower;
+        player.onGround = false;
+    }
+    const groundY = getTerrainHeight(player.mesh.position.x, player.mesh.position.z) + 1.8;
+    if(player.mesh.position.y > groundY){
+        player.vy -= CONFIG.gravity;
+    } else {
+        player.vy = 0;
+        player.mesh.position.y = groundY;
+        player.onGround = true;
+    }
+    player.mesh.position.y += player.vy;
+    player.y = player.mesh.position.y;
+
+    // OPTIMIERTE Wasserwellen (nur alle 5 Frames)
+    waterTime += deltaTime * CONFIG.waterSpeed;
+    if(Math.floor(waterTime * 5) % 5 === 0) {
+        for(let i = 0; i < waterGeo.attributes.position.count; i++) {
+            const x = waterGeo.attributes.position.getX(i);
+            const z = waterGeo.attributes.position.getZ(i);
+            const wave1 = Math.sin(x * 0.015 + waterTime) * 0.8;
+            const wave2 = Math.sin(z * 0.01 + waterTime * 0.7) * 0.5;
+            waterGeo.attributes.position.setY(i, wave1 + wave2);
+        }
+        waterGeo.attributes.position.needsUpdate = true;
+        waterGeo.computeVertexNormals();
+    }
+
+    player.mesh.visible = !isFirstPerson;
+    updatePlayerAnimation(deltaTime);
+    updateAnimals(deltaTime);
+    updateNet(deltaTime);
+
+    caughtUI.textContent = TOTAL_ANIMALS - animals.length - waterAnimals.length;
+
+    updateCamera();
+    renderer.render(scene, camera);
+    requestAnimationFrame(loop);
+}
+loop();
+
+window.addEventListener('resize', ()=>{
+    camera.aspect = window.innerWidth/window.innerHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(window.innerWidth, window.innerHeight);
+});
+</script>
+</body>
+</html>
